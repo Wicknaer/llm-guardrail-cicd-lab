@@ -1,0 +1,124 @@
+name: LLM CD (staging -> production)
+
+on:
+  workflow_run:
+    workflows: ["LLM Security Gate"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: llm-cd
+  cancel-in-progress: false
+
+env:
+  OLLAMA_VERSION: "0.40.13"
+  MODEL: "qwen2.5:1.5b"
+  PROMPTFOO_VERSION: "0.125.1"
+  PROMPTFOO_DISABLE_TELEMETRY: "1"
+  PROMPTFOO_DISABLE_UPDATE: "1"
+
+jobs:
+  deploy-staging:
+    name: deploy + verify (staging)
+    # Continue only if CI passed on a push to main (never for PR-triggered runs), or on manual dispatch
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: staging
+    steps:
+      - name: Checkout the exact commit that passed CI
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: app/requirements.txt
+
+      - name: Install app dependencies (pinned)
+        run: pip install -r app/requirements.txt
+
+      - name: Install Ollama (pinned)
+        run: curl -fsSL https://ollama.com/install.sh | OLLAMA_VERSION="$OLLAMA_VERSION" sh
+
+      - name: Start Ollama
+        run: |
+          if ! curl -sf http://127.0.0.1:11434/api/version; then
+            echo "Ollama service not responding - starting 'ollama serve' manually"
+            nohup ollama serve > ollama.log 2>&1 &
+          fi
+          for i in $(seq 1 60); do
+            curl -sf http://127.0.0.1:11434/api/version && exit 0
+            sleep 2
+          done
+          echo "Ollama did not start" >&2
+          systemctl status ollama --no-pager || true
+          tail -n 50 ollama.log 2>/dev/null || true
+          exit 1
+
+      - name: Pull model
+        run: ollama pull "$MODEL"
+
+      - name: Deploy app to staging (config comes from the environment)
+        env:
+          GUARDRAILS: ${{ vars.GUARDRAILS }}
+        run: |
+          echo "Deploying commit ${GITHUB_SHA::7} with GUARDRAILS=${GUARDRAILS:-<unset>}"
+          nohup uvicorn app.main:app --host 127.0.0.1 --port 8000 > app.log 2>&1 &
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:8000/health > /dev/null && exit 0
+            sleep 2
+          done
+          echo "App did not start" >&2; cat app.log; exit 1
+
+      - name: "Post-deploy check 1: guardrails must be enabled"
+        run: |
+          curl -s http://127.0.0.1:8000/health | tee health.json; echo
+          if ! jq -e '.guardrails == true' health.json > /dev/null; then
+            echo "::error::Guardrails are DISABLED in staging - blocking promotion to production"
+            exit 1
+          fi
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+
+      - name: Install promptfoo (pinned)
+        run: npm install -g "promptfoo@${PROMPTFOO_VERSION}"
+
+      - name: "Post-deploy check 2: security suite against the deployed app"
+        run: promptfoo eval -c promptfoo/promptfooconfig.yaml --no-cache -o staging-results.json -o staging-report.html
+
+      - name: Upload staging reports
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: staging-verification-report
+          path: |
+            health.json
+            staging-results.json
+            staging-report.html
+            app.log
+            ollama.log
+          if-no-files-found: warn
+
+  deploy-production:
+    name: deploy (production)
+    needs: deploy-staging
+    runs-on: ubuntu-latest
+    environment: production   # protected: requires manual approval
+    steps:
+      - name: Promote to production (simulated)
+        run: |
+          echo "Promoting commit ${{ github.event.workflow_run.head_sha || github.sha }} to production"
+          echo "(simulated - replace with your real deployment step)"
