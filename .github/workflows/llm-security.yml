@@ -1,0 +1,87 @@
+name: LLM Security Gate
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Least privilege: the workflow token can only read the repo
+permissions:
+  contents: read
+
+concurrency:
+  group: llm-security-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  OLLAMA_VERSION: "0.40.13"
+  MODEL: "qwen2.5:1.5b"
+  PROMPTFOO_VERSION: "0.125.1"
+  PROMPTFOO_DISABLE_TELEMETRY: "1"
+  PROMPTFOO_DISABLE_UPDATE: "1"
+
+jobs:
+  llm-security-tests:
+    name: promptfoo security suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: app/requirements.txt
+
+      - name: Install app dependencies (pinned)
+        run: pip install -r app/requirements.txt
+
+      - name: Install Ollama (pinned)
+        run: curl -fsSL https://ollama.com/install.sh | OLLAMA_VERSION="$OLLAMA_VERSION" sh
+
+      - name: Wait for Ollama API
+        run: |
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:11434/api/version && exit 0
+            sleep 2
+          done
+          echo "Ollama did not start" >&2; exit 1
+
+      - name: Pull model
+        run: ollama pull "$MODEL"
+
+      - name: Start target app
+        run: |
+          nohup uvicorn app.main:app --host 127.0.0.1 --port 8000 > app.log 2>&1 &
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:8000/health && exit 0
+            sleep 2
+          done
+          echo "App did not start" >&2; cat app.log; exit 1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install promptfoo (pinned)
+        run: npm install -g "promptfoo@${PROMPTFOO_VERSION}"
+
+      - name: Run LLM security suite (gate)
+        run: promptfoo eval -c promptfoo/promptfooconfig.yaml --no-cache -o results.json -o report.html
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: llm-security-report
+          path: |
+            results.json
+            report.html
+            app.log
+          if-no-files-found: warn
