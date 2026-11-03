@@ -86,7 +86,7 @@ def check_output(reply: str, system_prompt: str) -> tuple[str, str]:
 
     # 3) PII redaction (keep the answer, mask the data)
     actions = []
-    safe, n = IBAN_RE.subn("[REDACTED-IBAN]", reply)
+    safe, n = IBAN_RE.subn(lambda m: "****" + m.group(0).replace(" ", "")[-4:], reply)  # show last 4 digits only (ticket #142)
     if n:
         actions.append("redacted-iban")
     safe, n = PHONE_RE.subn("[REDACTED-PHONE]", safe)
