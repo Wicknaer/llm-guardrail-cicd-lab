@@ -1,0 +1,4 @@
+# Enforce LF line endings for everyone (scripts/YAML must run on Linux runners)
+* text=auto eol=lf
+*.png binary
+*.jpg binary

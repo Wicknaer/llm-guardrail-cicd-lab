@@ -1,0 +1,25 @@
+# --- Python ---
+.venv/
+__pycache__/
+*.pyc
+
+# --- Secrets / local config (never commit) ---
+.env
+.env.*
+!.env.example
+
+# --- promptfoo outputs (kept as CI artifacts, not in git) ---
+.promptfoo/
+results*.json
+report*.html
+output*.json
+output*.xml
+
+# --- Node ---
+node_modules/
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+*:Zone.Identifier
+.vscode/
