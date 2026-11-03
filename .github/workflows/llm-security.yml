@@ -44,13 +44,21 @@ jobs:
       - name: Install Ollama (pinned)
         run: curl -fsSL https://ollama.com/install.sh | OLLAMA_VERSION="$OLLAMA_VERSION" sh
 
-      - name: Wait for Ollama API
+      - name: Start Ollama
         run: |
-          for i in $(seq 1 30); do
+          # Don't rely on the systemd unit created by the installer: start the server ourselves if needed
+          if ! curl -sf http://127.0.0.1:11434/api/version; then
+            echo "Ollama service not responding - starting 'ollama serve' manually"
+            nohup ollama serve > ollama.log 2>&1 &
+          fi
+          for i in $(seq 1 60); do
             curl -sf http://127.0.0.1:11434/api/version && exit 0
             sleep 2
           done
-          echo "Ollama did not start" >&2; exit 1
+          echo "Ollama did not start" >&2
+          systemctl status ollama --no-pager || true
+          tail -n 50 ollama.log 2>/dev/null || true
+          exit 1
 
       - name: Pull model
         run: ollama pull "$MODEL"
@@ -84,4 +92,5 @@ jobs:
             results.json
             report.html
             app.log
+            ollama.log
           if-no-files-found: warn
